@@ -1,0 +1,332 @@
+diff --git a/browser/app/profile/firefox.js b/browser/app/profile/firefox.js
+--- a/browser/app/profile/firefox.js
++++ b/browser/app/profile/firefox.js
+@@ -999,7 +999,7 @@ pref("dom.ipc.plugins.sandbox-level.flas
+ // On windows these levels are:
+ // See - security/sandbox/win/src/sandboxbroker/sandboxBroker.cpp
+ // SetSecurityLevelForContentProcess() for what the different settings mean.
+-pref("security.sandbox.content.level", 5);
++pref("security.sandbox.content.level", 0);
+ 
+ // This controls the depth of stack trace that is logged when Windows sandbox
+ // logging is turned on.  This is only currently available for the content
+
+diff --git a/modules/libpref/init/all.js b/modules/libpref/init/all.js
+--- a/modules/libpref/init/all.js
++++ b/modules/libpref/init/all.js
+@@ -238,8 +238,8 @@ pref("dom.webmidi.enabled", false);
+ // execution to record the bytecode of the JavaScript function used, and save it
+ // in the existing cache entry. On the following loads of the same script, the
+ // bytecode would be loaded from the cache instead of being generated once more.
++pref("dom.script_loader.bytecode_cache.enabled", false); 
+-pref("dom.script_loader.bytecode_cache.enabled", true);
++
+ // Ignore the heuristics of the bytecode cache, and always record on the first
+ // visit. (used for testing purposes).
+
+diff --git a/dom/html/HTMLCanvasElement.cpp b/dom/html/HTMLCanvasElement.cpp
+--- a/dom/html/HTMLCanvasElement.cpp
++++ b/dom/html/HTMLCanvasElement.cpp
+@@ -5,7 +5,6 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "mozilla/dom/HTMLCanvasElement.h"
++#include "js/SavedFrameAPI.h"  
+ 
+ #include "gfxPrefs.h"
+ #include "ImageEncoder.h"
+@@ -676,26 +675,7 @@ HTMLCanvasElement::ToDataURL(JSContext* 
+     aRv.Throw(NS_ERROR_DOM_SECURITY_ERR);
+     return;
+   }
++  
++  fprintf(stderr, "##########Fingerprinting detected##########\n");
++  
++  // JS::RootedString fileName(aCx, JS_GetEmptyString(aCx)), functionName(aCx, JS_GetEmptyString(aCx));
++  uint32_t line = 0;
++  uint32_t column = 0;
++  JS::RootedObject stackp(aCx);
++  if(JS::CaptureCurrentStack(aCx, &stackp)) {
++  		JSPrincipals* principals = JS::GetRealmPrincipals(js::GetContextRealm(aCx));
++    	if (JS::GetSavedFrameLine(aCx, principals, stackp, &line) == JS::SavedFrameResult::Ok &&
++             JS::GetSavedFrameColumn(aCx, principals, stackp, &column) == JS::SavedFrameResult::Ok &&
++             JS::GetSavedFrameSource(aCx, principals, stackp, &fileName) == JS::SavedFrameResult::Ok) {
++         fprintf(stderr, "%d : %d : %s\n", line, column, JS_EncodeStringToUTF8(aCx, fileName).get());
++       }
++  }
++  // JS::AutoFilename filename;
++  // bool res = DescribeScriptedCaller(aCx, &filename, &line, &column);
++  // fprintf(stderr, "%d : %d : %s\n", line, column, filename.get());
++  // Ends here
++
+   aRv = ToDataURLImpl(aCx, aSubjectPrincipal, aType, aParams, aDataURL);
+ }
+
+ diff --git a/dom/canvas/CanvasRenderingContext2D.cpp b/dom/canvas/CanvasRenderingContext2D.cpp
+--- a/dom/canvas/CanvasRenderingContext2D.cpp
++++ b/dom/canvas/CanvasRenderingContext2D.cpp
+
+@@ -2115,7 +2124,7 @@ CanvasRenderingContext2D::GetSurfaceForm
+ 
+ void
+ CanvasRenderingContext2D::Save()
++{ // fprintf(stderr, "**********Fingerprinting possibility**********\n"); 
++{
+   EnsureTarget();
+   if (MOZ_UNLIKELY(!mTarget || mStyleStack.IsEmpty())) {
+     SetErrorState();
+@@ -2134,7 +2143,7 @@ CanvasRenderingContext2D::Save()
+ 
+ void
+ CanvasRenderingContext2D::Restore()
++{ // fprintf(stderr, "**********Fingerprinting possibility**********\n"); 
++{
+   if (MOZ_UNLIKELY(mStyleStack.Length() < 2)) {
+     return;
+   }
+@@ -4249,9 +4258,7 @@ CanvasRenderingContext2D::DrawOrMeasureT
+   // replace all the whitespace characters with U+0020 SPACE
+   nsAutoString textToDraw(aRawText);
+   TextReplaceWhitespaceCharacters(textToDraw);
++  
++  if (textToDraw.Length() > 10)
++    fprintf(stderr, "##########Fingerprinting possibility##########\n");
++
+   // According to spec, the API should return an empty array if maxWidth was provided
+   // but is less than or equal to zero or equal to NaN.
+   if (aMaxWidth.WasPassed() && (aMaxWidth.Value() <= 0 || IsNaN(aMaxWidth.Value()))) {
+@@ -5485,9 +5492,7 @@ CanvasRenderingContext2D::GetImageData(J
+   if (h == 0) {
+     h = 1;
+   }
++  
++  if (w >= 16 && h >= 16)
++    fprintf(stderr, "********Fingerprinting detected*******\n");
+
+diff --git a/dom/script/ScriptLoader.cpp b/dom/script/ScriptLoader.cpp
+--- a/dom/script/ScriptLoader.cpp
++++ b/dom/script/ScriptLoader.cpp
+@@ -26,7 +26,6 @@
+ #include "mozilla/dom/Element.h"
+ #include "mozilla/dom/ScriptSettings.h"
+ #include "mozilla/dom/SRILogHelper.h"
++#include <unistd.h> 
+ #include "nsGkAtoms.h"
+ #include "nsNetUtil.h"
+ #include "nsIScriptGlobalObject.h"
+@@ -495,7 +494,7 @@ ScriptLoader::CreateModuleScript(ModuleL
+       rv = FillCompileOptionsForRequest(aes, aRequest, global, &options);
+ 
+       if (NS_SUCCEEDED(rv)) {
++        auto srcBuf = GetScriptSource(cx, options.filename(), aRequest);
+-        auto srcBuf = GetScriptSource(cx, aRequest);
+         if (srcBuf) {
+           rv = nsJSUtils::CompileModule(cx, *srcBuf, global, options, &module);
+         } else {
+@@ -1862,7 +1861,7 @@ ScriptLoader::AttemptAsyncScriptCompile(
+ 
+   if (aRequest->IsModuleRequest()) {
+     MOZ_ASSERT(aRequest->IsTextSource());
++    auto srcBuf = GetScriptSource(cx, options.filename(), aRequest);
+-    auto srcBuf = GetScriptSource(cx, aRequest);
+     if (!srcBuf || !JS::CompileOffThreadModule(cx, options,
+                                                *srcBuf,
+                                                OffThreadScriptLoaderCallback,
+@@ -1890,7 +1889,7 @@ ScriptLoader::AttemptAsyncScriptCompile(
+ #endif
+   } else {
+     MOZ_ASSERT(aRequest->IsTextSource());
++    auto srcBuf = GetScriptSource(cx, options.filename(), aRequest);
+-    auto srcBuf = GetScriptSource(cx, aRequest);
+     if (!srcBuf || !JS::CompileOffThread(cx, options,
+                                          *srcBuf,
+                                          OffThreadScriptLoaderCallback,
+@@ -1939,9 +1938,12 @@ ScriptLoader::GetScriptSource(JSContext*
+ {
+   // Return a SourceBufferHolder object holding the script's source text.
+   // Ownership of the buffer is transferred to the resulting SourceBufferHolder.
++
++  // If there's no script text, we try to get it from the element
+   if (aRequest->mIsInline) {
+     nsAutoString inlineData;
+     aRequest->Element()->GetScriptText(inlineData);
++
+     size_t nbytes = inlineData.Length() * sizeof(char16_t);
+     JS::UniqueTwoByteChars chars(static_cast<char16_t*>(JS_malloc(aCx, nbytes)));
+     if (!chars) {
+@@ -1951,80 +1953,9 @@ ScriptLoader::GetScriptSource(JSContext*
+     memcpy(chars.get(), inlineData.get(), nbytes);
+     return Some(SourceBufferHolder(std::move(chars), inlineData.Length()));
+   }
++
+   size_t length = aRequest->ScriptText().length();
+   JS::UniqueTwoByteChars chars(aRequest->ScriptText().extractOrCopyRawBuffer());
++  
++  return Some(SourceBufferHolder(std::move(chars), length));
++}
++
++// Write script code to a file
++void writeScriptToFile(JSContext* aCx, bool isInline, const char *filename, const char *str) {
++  
++  char result[30];
++  const char* dir = getenv("JS_SCRIPT_OUTDIR");
++  strcpy(result, dir);
++  
++  // compile the log file name
++  char n_str[10];
++  sprintf(n_str, "%d.txt", getpid());
++  strcat(result, n_str);
++
++  // compile the script filename 
++  JS::UniqueChars chars(static_cast<char*>(JS_malloc(aCx, 22 + strlen(filename) + strlen(str))));
++  if (isInline)
++     strcpy(chars.get(), "\n####In####\n");
++  else
++     strcpy(chars.get(), "\n####Ex####\n");
++  strcpy(chars.get() + 12, filename);
++  strcpy(chars.get() + 12 + strlen(filename), "\n########\n");
++  memcpy(chars.get() + 22 + strlen(filename), str, strlen(str));
++  // Open file in append mode
++  FILE* fp;
++  fp = fopen(result, "a");
++
++  int i = fwrite(chars.get(), /*size=*/ 1, /*nitems=*/ 22 + strlen(filename) + strlen(str), fp);
++
++  fclose(fp);
++  fp = nullptr;
++}
++
++
++mozilla::Maybe<JS::SourceBufferHolder> 
++ScriptLoader::GetScriptSource(JSContext* aCx, const char *filename,
++                                                         ScriptLoadRequest* aRequest) {
++  // Return a SourceBufferHolder object holding the script's source text.
++  // Ownership of the buffer is transferred to the resulting SourceBufferHolder.
++  if (aRequest->mIsInline) {
++    nsAutoString inlineData;
++    aRequest->Element()->GetScriptText(inlineData);
++    
++    if (strncmp(filename, "http", 4) == 0) {
++      writeScriptToFile(aCx, true, filename, NS_ConvertUTF16toUTF8(inlineData).get());
++    }
++    size_t nbytes = inlineData.Length() * sizeof(char16_t);
++    JS::UniqueTwoByteChars chars(static_cast<char16_t*>(JS_malloc(aCx, nbytes)));
++    if (!chars) {
++      return Nothing();
++    }
+-
++    memcpy(chars.get(), inlineData.get(), nbytes);
++    return Some(SourceBufferHolder(std::move(chars), inlineData.Length()));
++  }
++  size_t length = aRequest->ScriptText().length();
++  JS::UniqueTwoByteChars chars(aRequest->ScriptText().extractOrCopyRawBuffer());
+-
++  if (strncmp(filename, "http", 4) == 0) {
++    writeScriptToFile(aCx, false, filename, NS_ConvertUTF16toUTF8(chars.get(), length).get());
++  }
++  
+   return Some(SourceBufferHolder(std::move(chars), length));
+ }
+
+@@ -2472,8 +2401,8 @@ ScriptLoader::EvaluateScript(ScriptLoadR
+                                               &script);
+               } else {
+                 MOZ_ASSERT(aRequest->IsTextSource());
++                auto srcBuf = GetScriptSource(cx, options.filename(), aRequest);
++                
+-                auto srcBuf = GetScriptSource(cx, aRequest);
+-
+                 if (srcBuf) {
+                   if (recordreplay::IsRecordingOrReplaying()) {
+                     recordreplay::NoteContentParse16(this, options.filename(), "application/javascript",
+
+diff --git a/dom/script/ScriptLoader.h b/dom/script/ScriptLoader.h
+--- a/dom/script/ScriptLoader.h
++++ b/dom/script/ScriptLoader.h
+@@ -509,9 +509,6 @@ private:
+ 
+   mozilla::Maybe<JS::SourceBufferHolder> GetScriptSource(JSContext* aCx,
+                                                          ScriptLoadRequest* aRequest);
++  
++  mozilla::Maybe<JS::SourceBufferHolder> GetScriptSource(JSContext* aCx, bool isInline, const char *filename,
++                                                         ScriptLoadRequest* aRequest);
+ 
+   void SetModuleFetchStarted(ModuleLoadRequest *aRequest);
+   void SetModuleFetchFinishedAndResumeWaitingRequests(ModuleLoadRequest* aRequest,
+
+diff --git a/js/src/builtin/Eval.cpp b/js/src/builtin/Eval.cpp
+--- a/js/src/builtin/Eval.cpp
++++ b/js/src/builtin/Eval.cpp
+@@ -4,16 +4,15 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
++#include "builtin/Eval.h"
+ 
+ #include "mozilla/HashFunctions.h"
+ #include "mozilla/Range.h"
++#include <unistd.h>
+ #include "frontend/BytecodeCompiler.h"
+ #include "gc/HashUtil.h"
+ #include "js/SourceBufferHolder.h"
+ #include "js/StableStringChars.h"
+-
+ #include "vm/Debugger.h"
+ #include "vm/GlobalObject.h"
+ #include "vm/JSContext.h"
+@@ -216,31 +215,6 @@ TryEvalJSON(JSContext* cx, JSLinearStrin
+            : ParseEvalStringAsJSON(cx, linearChars.twoByteRange(), rval);
+ }
+ 
++// Write script code to a file
++void writeScriptToFile(JSContext *aCx, bool isDEval, const char *filename, const char *str) {
++  char result[30];
++  const char* dir = getenv("JS_SCRIPT_OUTDIR");
++  strcpy(result, dir);
++
++  char n_str[10];
++  sprintf(n_str, "%d.txt", getpid());
++  strcat(result, n_str);
++
++  // compile the script filename 
++  JS::UniqueChars chars(static_cast<char*>(JS_malloc(aCx, 25 + strlen(filename) + strlen(str))));
++  if (isDEval)
++     strcpy(chars.get(), "\n####DEval####\n");
++  else
++     strcpy(chars.get(), "\n####IEval####\n");
++  strcpy(chars.get() + 15, filename);
++  strcpy(chars.get() + 15 + strlen(filename), "\n########\n");
++  memcpy(chars.get() + 25 + strlen(filename), str, strlen(str));
++  
++  FILE* fp;
++  fp = fopen(result, "a");
++  int i = fwrite(chars.get(), /*size=*/ 1, /*nitems=*/ 25 + strlen(filename) + strlen(str), fp);
++  fclose(fp);
++  fp = nullptr;
++}
++
+ enum EvalType { DIRECT_EVAL, INDIRECT_EVAL };
+ 
+ // Common code implementing direct and indirect eval.
+@@ -348,24 +322,6 @@ EvalKernel(JSContext* cx, HandleValue v,
+                                                   ? SourceBufferHolder::GiveOwnership
+                                                   : SourceBufferHolder::NoOwnership;
+         SourceBufferHolder srcBuf(chars, linearStr->length(), ownership);
++
++        if (strncmp(filename, "http", 4) == 0) {
++            writeScriptToFile(cx, filename, JS::CharsToNewUTF8CharsZ(cx, linearChars.twoByteRange()).c_str()); 
++        }
+         JSScript* compiled = frontend::CompileEvalScript(cx, env, enclosing, options, srcBuf);
+         if (!compiled) {
+             return false;
+@@ -450,15 +406,6 @@ js::DirectEvalStringFromIon(JSContext* c
+                                                   ? SourceBufferHolder::GiveOwnership
+                                                   : SourceBufferHolder::NoOwnership;
+         SourceBufferHolder srcBuf(chars, linearStr->length(), ownership);
++        
++        if (strncmp(filename, "http", 4) == 0) {
++            writeScriptToFile(cx, filename, JS::CharsToNewUTF8CharsZ(cx, linearChars.twoByteRange()).c_str()); 
++        }
+         JSScript* compiled = frontend::CompileEvalScript(cx, env, enclosing, options, srcBuf);
+         if (!compiled) {
+             return false;
